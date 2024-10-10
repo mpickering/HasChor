@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds      #-}
 {-# LANGUAGE LambdaCase     #-}
+{-# LANGUAGE ApplicativeDo  #-}
 
 module Main where
 
@@ -11,6 +12,7 @@ import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.State
 import System.Environment
+import Control.Selective
 
 -- an edge of the ring is represented as a tuple of two locaitons l and l' where
 -- l is on the left of l'
@@ -22,31 +24,42 @@ type Ring = [Edge]
 
 type Label = Int
 
-ringLeader :: Ring -> Choreo (StateT Label IO) ()
-ringLeader ring = loop ring
+list :: Selective f => f [a] -> f c -> f ((a, [a]) -> c) -> f c
+list l k = branch (p <$> l) (const <$> k)
   where
-    loop :: Ring -> Choreo (StateT Label IO) ()
-    loop []     = loop ring
-    loop (x:xs) = do
-      finished <- talkToRight x
-      if finished
-      then return ()
-      else loop xs
+    p [] = Left ()
+    p (x:xs) = Right (x, xs)
+
+ringLeader :: Ring -> Choreo (StateT Label IO) ()
+ringLeader ring = Loop (\k -> unroll ring k)
+  where
+    unroll :: Ring -> Choreo (StateT Label IO) () -> Choreo (StateT Label IO) ()
+    unroll []     k = k
+    unroll (x:xs) k = do
+      ifS (talkToRight x)
+        (pure ())
+        (unroll xs k)
 
     talkToRight :: Edge -> Choreo (StateT Label IO) Bool
     talkToRight (Edge left right) = do
-      labelLeft  <- (left, \_ -> get) ~~> right
-      labelRight <- right `locally` \_ -> get
+      let labelLeft = (left, Eff left (pure ()), \_ -> get) ~~> right
+      let labelRight = right `locally` get
 
-      finished <- right `locally` \un ->
-        return $ un labelLeft == un labelRight
+      let finished =
+            LocalAp right (LocalAp right (Eff right (pure (\l -> pure (\r -> pure (l == r))))) labelLeft) labelRight
 
-      cond (right, finished) \case
+{-
+      right `locally` \un ->
+                        return $ (==) <$> (un <$> labelLeft) <*> (un <$> labelRight)
+                        -}
+
+      condBool right finished \case
         True  -> do
-          right `locally` \_ -> lift $ putStrLn "I'm the leader"
+          right `locally` (lift $ putStrLn "I'm the leader")
           return True
         False -> do
-          right `locally` \un -> put (max (un labelLeft) (un labelRight))
+          LocalAp right (LocalAp right (Eff right (pure (\l -> pure (\r -> put (max l r))))) labelLeft) labelRight
+--          right `locally` \un -> put (max (un labelLeft) (un labelRight))
           return False
 
 nodeA :: Proxy "A"

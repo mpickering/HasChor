@@ -6,7 +6,7 @@
 module Choreography.Network.Http where
 
 import Choreography.Location
-import Choreography.Network hiding (run)
+import qualified Choreography.Network as C
 import Data.ByteString (fromStrict)
 import Data.Proxy (Proxy(..))
 import Data.HashMap.Strict (HashMap, (!))
@@ -68,7 +68,42 @@ mkRecvChans cfg = foldM f HashMap.empty (locs cfg)
 
 -- * HTTP backend
 
-runNetworkHttp :: MonadIO m => HttpConfig -> LocTm -> Network m a -> m a
+newtype HttpNetwork m a = HttpNetwork { httpNetwork :: HttpConfig -> LocTm -> Manager -> RecvChans -> m a }
+
+instance (Functor f) => Functor (HttpNetwork f) where
+  fmap f (HttpNetwork k) = HttpNetwork $ \a b c d -> fmap f (k a b c d)
+
+instance Applicative f => Applicative (HttpNetwork f) where
+  pure x = HttpNetwork $ \_ _ _ _ -> pure x
+  (HttpNetwork f) <*> (HttpNetwork x) = HttpNetwork $ \a b c d -> f a b c d <*> x a b c d
+
+instance Monad f => Monad (HttpNetwork f) where
+  return = pure
+  (HttpNetwork ma) >>= f = HttpNetwork $ \a b c d -> ma a b c d >>= ((\v -> httpNetwork v a b c d) . f)
+
+
+instance MonadIO m => C.NetworkT HttpNetwork m where
+  run_ m = HttpNetwork $ \_ _ _ _ -> liftIO (print "running") >> m
+  send_ a l = HttpNetwork $ \cfg self mgr chans -> liftIO $ do
+    print ("SEND ->" ++ l)
+    res <- runClientM (send self $ show a) (mkClientEnv mgr (locToUrl cfg ! l))
+    case res of
+            Left err -> putStrLn $ "Error : " ++ show err
+            Right _  -> return ()
+    where
+      api :: Proxy API
+      api = Proxy
+
+      send = client api
+
+  recv_ l = HttpNetwork $ \_ _ mgr chans -> do
+          liftIO $ print ("RECV " ++ l)
+          liftIO $ read <$> readChan (chans ! l)
+  broadcast_ a = HttpNetwork $ \cfg self mgr chans -> httpNetwork (mapM_ (C.send_ a) (locs cfg)) cfg self mgr chans
+
+
+{-# INLINE runNetworkHttp #-}
+runNetworkHttp :: MonadIO m => HttpConfig -> LocTm -> C.Network m a -> m a
 runNetworkHttp cfg self prog = do
   mgr <- liftIO $ newManager defaultManagerSettings
   chans <- liftIO $ mkRecvChans cfg
@@ -78,18 +113,8 @@ runNetworkHttp cfg self prog = do
   liftIO $ killThread recvT
   return result
   where
-    runNetworkMain :: MonadIO m => Manager -> RecvChans -> Network m a -> m a
-    runNetworkMain mgr chans = interpFreer handler
-      where
-        handler :: MonadIO m => NetworkSig m a -> m a
-        handler (Run m)    = m
-        handler(Send a l) = liftIO $ do
-          res <- runClientM (send self $ show a) (mkClientEnv mgr (locToUrl cfg ! l))
-          case res of
-            Left err -> putStrLn $ "Error : " ++ show err
-            Right _  -> return ()
-        handler (Recv l)   = liftIO $ read <$> readChan (chans ! l)
-        handler (BCast a)  = mapM_ handler $ fmap (Send a) (locs cfg)
+    runNetworkMain :: (MonadIO m) => Manager -> RecvChans -> C.Network m a -> m a
+    runNetworkMain mgr chans (C.Network n) = httpNetwork n cfg self mgr chans
 
     api :: Proxy API
     api = Proxy
@@ -108,5 +133,5 @@ runNetworkHttp cfg self prog = do
     recvThread :: HttpConfig -> RecvChans -> IO ()
     recvThread cfg chans = run (baseUrlPort $ locToUrl cfg ! self ) (serve api $ server chans)
 
-instance Backend HttpConfig where
+instance C.Backend HttpConfig where
   runNetwork = runNetworkHttp

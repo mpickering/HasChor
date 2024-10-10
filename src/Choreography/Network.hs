@@ -2,11 +2,13 @@
 -- individual nodes in a distributed system with explicit sends and receives.
 -- To run a `Network` program, we provide a `runNetwork` function that supports
 -- multiple message transport backends.
+{-# LANGUAGE RankNTypes #-}
 module Choreography.Network where
 
 import Choreography.Location
 import Control.Monad.Freer
 import Control.Monad.IO.Class
+import Control.Selective
 
 -- * The Network monad
 
@@ -29,26 +31,34 @@ data NetworkSig m a where
         => a
         -> NetworkSig m ()
 
+class NetworkT n m where
+  run_ :: m a -> n m a
+  send_ :: (Show a) => a -> LocTm -> n m ()
+  recv_ :: (Read a) => LocTm -> n m a
+  broadcast_ :: (Show a) => a -> n m ()
+
+run x = Network (run_ x)
+send x l = Network (send_ x l)
+recv l = Network (recv_ l)
+broadcast a = Network (broadcast_ a)
+
+
+
 -- | Monad that represents network programs.
-type Network m = Freer (NetworkSig m)
+data Network m a = Network { runN :: forall n . (Monad (n m), NetworkT n m) => (n m a) }
 
--- * Network operations
+instance Functor (Network m) where
+  fmap f (Network a) = Network (fmap f a)
 
--- | Perform a local computation.
-run :: m a -> Network m a
-run m = toFreer $ Run m
+instance Applicative (Network m) where
+  pure x = Network (pure x)
+  (Network fa) <*> ~(Network a) = Network (fa <*> a)
 
--- | Send a message to a receiver.
-send :: Show a => a -> LocTm -> Network m ()
-send a l = toFreer $ Send a l
+instance Monad (Network m) where
+  (Network a) >>= f = Network (a >>= \x -> case f x of Network n -> n)
 
--- | Receive a message from a sender.
-recv :: Read a => LocTm -> Network m a
-recv l = toFreer $ Recv l
-
--- | Broadcast a message to all participants.
-broadcast :: Show a => a -> Network m ()
-broadcast a = toFreer $ BCast a
+instance Selective (Network m) where
+  select = selectM
 
 -- * Message transport backends
 
@@ -56,4 +66,4 @@ broadcast a = toFreer $ BCast a
 -- carries necessary bookkeeping information, then defines @c@ as an instance
 -- of `Backend` and provides a `runNetwork` function.
 class Backend c where
-  runNetwork :: MonadIO m => c -> LocTm -> Network m a -> m a
+  runNetwork :: (MonadIO m) => c -> LocTm -> Network m a -> m a

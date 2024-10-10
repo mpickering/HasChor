@@ -3,6 +3,7 @@
 module Control.Monad.Freer where
 
 import Control.Monad ((>=>))
+import Control.Selective
 
 -- | Freer monads.
 --
@@ -32,6 +33,13 @@ instance Applicative (Freer f) where
 instance Monad (Freer f) where
   (Return a) >>= f = f a
   (Do eff k) >>= f = Do eff (k >=> f)
+
+instance Selective (Freer f) where
+  select f k = do
+    f' <- f
+    case f' of
+      Left a' -> k <*> (pure a')
+      Right b -> return b
 
 -- | Lift an effect into the freer monad.
 toFreer :: f a -> Freer f a

@@ -6,6 +6,7 @@ module Choreography.Location where
 import Data.Proxy
 import Data.String
 import GHC.TypeLits
+import GHC.Stack
 
 -- | Term-level locations.
 type LocTm = String
@@ -32,6 +33,6 @@ wrap = Wrap
 -- | Unwrap a located value.
 --
 -- /Note:/ Unwrapping a empty located value will throw an exception.
-unwrap :: a @ l-> a
+unwrap :: HasCallStack => a @ l-> a
 unwrap (Wrap a) = a
 unwrap Empty    = error "this should never happen for a well-typed choreography"
