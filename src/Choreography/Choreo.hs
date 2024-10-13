@@ -36,6 +36,7 @@ data FreeApplicative f a where
         -> FreeApplicative f (a -> r)
         -> FreeApplicative f r
   Comm  :: (Show a, Read a, KnownSymbol l, KnownSymbol l', Typeable a) => Proxy l -> FreeApplicative f (a @ l) -> Proxy l' -> FreeApplicative f (a @ l')
+  Let :: FreeApplicative f a -> (FreeApplicative f a -> FreeApplicative f b) -> FreeApplicative f b
   -- Application on a specific node
   LocalAp ::
     KnownSymbol l => Proxy l -> FreeApplicative f ((a -> f b) @ l)
@@ -112,6 +113,7 @@ staged c =
 
     Loop f         -> [|| let res = $$(staged (f (Dragon (Var2 [|| res ||])))) in res ||]
     SelectN fe fab -> [|| select $$(staged fe) $$(staged fab) ||]
+    Let a b -> [|| let l = $$(staged a) in $$(staged (b (Dragon (Var2 [|| l ||])))) ||]
 
 
 
@@ -151,6 +153,7 @@ stagedEpp c l' =
     LocalAp l m a -> handlerLoc l (stagedEpp m l') (stagedEpp a l')
     Loop f -> R [|| let res = $$(runR $ stagedEpp (f (Dragon (Var [|| res ||]))) l')
                     in res ||]
+    Let a b -> R [|| let l = $$(runR $ stagedEpp a l') in $$(runR $ stagedEpp (b (Dragon (Var [|| l ||]))) l') ||]
     SelectN fe fab -> R [|| select $$(runR $ stagedEpp fe l') $$(runR $ stagedEpp fab l') ||]
 {-
   Pure :: a -> FreeApplicative f a

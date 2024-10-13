@@ -21,6 +21,7 @@ import System.Environment
 import Control.Selective
 import Ring
 
+
 main :: IO ()
 main = do
   [loc] <- getArgs

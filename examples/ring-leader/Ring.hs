@@ -47,23 +47,19 @@ ringLeader ring = Loop (\k -> unroll ring k)
 
     talkToRight :: Edge -> Choreo (StateT Label IO) Bool
     talkToRight (Edge left right) = do
-      let labelLeft = (left, Eff left (V [|| pure () ||]), V [|| \_ -> get ||]) ~~> right
-      let labelRight = right `locally` (V [|| get ||])
+      Let ((left, Eff left (V [|| pure () ||]), V [|| \_ -> get ||]) ~~> right) $
+        \labelLeft ->
+          Let (right `locally` (V [|| get ||])) $
+            \labelRight ->
+            Let (LocalAp right (LocalAp right (Eff right (V [|| f ||])) labelLeft) labelRight) $
+              \finished -> do
 
-      let finished =
-            LocalAp right (LocalAp right (Eff right (V [|| f ||])) labelLeft) labelRight
-
-{-
-      right `locally` \un ->
-                        return $ (==) <$> (un <$> labelLeft) <*> (un <$> labelRight)
-                        -}
-
-      condBool right finished \case
-        True  -> Fmap (V [|| \_ -> True ||]) $
-          right `locally` (V[|| (lift $ putStrLn "I'm the leader") ||])
-        False ->
-          Fmap (V [|| \_ -> False ||]) $
-          LocalAp right (LocalAp right (Eff right (V [|| f2 ||])) labelLeft) labelRight
+                (condBool right finished \case
+                  True  -> Fmap (V [|| \_ -> True ||]) $
+                    right `locally` (V[|| (lift $ putStrLn "I'm the leader") ||])
+                  False ->
+                    Fmap (V [|| \_ -> False ||]) $
+                    LocalAp right (LocalAp right (Eff right (V [|| f2 ||])) labelLeft) labelRight)
 --          right `locally` \un -> put (max (un labelLeft) (un labelRight))
 
 nodeA :: Proxy "A"
