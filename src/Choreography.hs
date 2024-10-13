@@ -29,9 +29,6 @@ module Choreography (
    mkHttpConfig,
    ifBool,
 
-  -- * Running choreographies
-  runChoreo,
-  runChoreography
   ) where
 
 import Choreography.Location
@@ -44,8 +41,8 @@ import Data.Proxy
 import Language.Haskell.TH.Syntax
 
 -- | Run a choreography with a message transport backend.
-runChoreography :: (Lift config, Backend config, MonadIO m) => config -> Choreo m a -> LocTm -> m a
-runChoreography cfg choreo l = runNetwork cfg l (epp choreo l)
+--runChoreography :: (Lift config, Backend config, MonadIO m) => config -> Choreo m a -> LocTm -> m a
+--runChoreography cfg choreo l = runNetwork cfg l (epp choreo l)
 
 runChoreographyStaged cfg choreo l = [|| runNetwork cfg l $$(runR $ stagedEpp choreo l) ||]
 

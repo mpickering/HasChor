@@ -20,7 +20,7 @@ import Language.Haskell.TH.Syntax
 import Data.Typeable
 import Control.Applicative
 
-data V a = V { v :: a, cv :: Code Q a }
+data V a = V { cv :: Code Q a }
 
 data Var m a = Var (Code Q (Network m a)) | Var2 (Code Q (m a))
 
@@ -54,32 +54,10 @@ instance Applicative (FreeApplicative f) where
 
 
 
-interpAp :: (Selective m, Applicative m) => (forall l z b . (Show z, Read z, KnownSymbol l) => Proxy l -> m (Either (z @ l) b) -> m (z -> b) -> m b)
-                            -> (forall l l' z . (Show z, Read z, KnownSymbol l, KnownSymbol l') => Proxy l -> m (z @ l) -> Proxy l' -> m (z @ l'))
-                            -> (forall y l z  . KnownSymbol l => Proxy l -> m ((y -> f z) @ l) -> m (y @ l) -> m (z @ l))
-                            -> (forall l a . KnownSymbol l => Proxy l -> f a -> m (a @ l))
-                            -> FreeApplicative f a -> m a
-interpAp _ _ _ k (Pure a) = pure (v a)
-interpAp _ _ _ k (Eff l x)  = k l (v x)
-interpAp sel comm loc k (Fmap f x) = v f <$> interpAp sel comm loc k x
-interpAp sel comm loc k (Ap f x) = interpAp sel comm loc k f <*> interpAp sel comm loc k x
---interpAp sel comm loc k (Select l scrut cont) = sel l (interpAp sel comm loc k scrut) (interpAp sel comm loc k cont)
-interpAp sel comm loc k (Comm l1 c l2) = comm l1 (interpAp sel comm loc k c) l2
-interpAp sel comm loc k (LocalAp l ff fa) =
-  loc l (interpAp sel comm loc k ff) (interpAp sel comm loc k fa)
-interpAp sel comm loc k (Loop f) = error "todo"
---  let res = f res
---  in interpAp sel comm loc k res
-interpAp sel comm loc k (SelectN a b) = select (interpAp sel comm loc k a) (interpAp sel comm loc k b)
-
 toAp :: KnownSymbol l => Proxy l -> V (f a) -> FreeApplicative f (a @ l)
 toAp l x = Eff l x
 
 -- * The Choreo monad
-
--- | A constrained version of `unwrap` that only unwraps values located at a
--- specific location.
-type Unwrap l = forall a. a @ l -> a
 
 -- | Effect signature for the `Choreo` monad. @m@ is a monad that represents
 -- local computations.
@@ -225,56 +203,6 @@ stagedEpp c l' =
       | toLocTm l == l' = R [|| (unwrap <$> $$p) >>= \p' -> (unwrap <$> $$m) >>= \m' -> (wrap <$> run (p' m')) ||]
       | otherwise       = R [|| Empty <$ ($$p *> $$m) ||]
 
--- | Run a `Choreo` monad directly.
-runChoreo :: forall m a . (Selective m , Monad m) => Choreo m a -> m a
-runChoreo = interpAp (\_ s x -> select (fmap (bimap unwrap id) s) x) handlerComm handlerLoc (\_ -> fmap wrap)
-  where
-    handlerLoc :: (forall l z  . KnownSymbol l => Proxy l -> m ((y -> m z) @ l) -> m (y @ l) -> m (z @ l))
-    handlerLoc _ p m  = (unwrap <$> p) >>= \p' -> (unwrap <$> m) >>= \m' -> (wrap <$> p' m')
-    handlerComm :: (forall l l' z . (Show z, Read z, KnownSymbol l, KnownSymbol l') => Proxy l -> m (z @ l) -> Proxy l' -> m (z @ l'))
-    handlerComm _ a _ = (wrap . unwrap) <$> a
-
--- | Endpoint projection.
-epp :: forall m a . Choreo m a -> LocTm -> Network m a
-epp c l' = interpAp sel handlerComm handlerLoc (\_ -> fmap wrap . run) c
-  where
-    handlerLoc :: (forall l y z  . KnownSymbol l => Proxy l -> Network m ((y -> m z) @ l) -> Network m (y @ l) -> Network m (z @ l))
-    handlerLoc l p m
-      | toLocTm l == l' = (unwrap <$> p) >>= \p' -> (unwrap <$> m) >>= \m' -> (wrap <$> run (p' m'))
-      | otherwise       = Empty <$ (p *> m)
-    handlerComm :: (forall l l' z . (Show z, Read z, KnownSymbol l, KnownSymbol l') => Proxy l -> Network m (z @ l) -> Proxy l' -> Network m (z @ l'))
-    handlerComm s a r
-      | toLocTm s == l' = a >>= \a' -> send (unwrap a') (toLocTm r) >> return Empty
-      | toLocTm r == l' = a >> (wrap <$> recv (toLocTm s))
-      | otherwise       = Empty <$ a
-
-    sel :: (Read z, Show z, KnownSymbol l) => Proxy l -> Network m (Either (z @ l) b) -> Network m (z -> b) -> Network m b
-    sel l s c
-      | toLocTm l == l' = do
-          v <- s
-          case v of
-            Left a -> do
-              broadcast (unwrap a)
-              k <- c
-              return $ (k (unwrap a))
-            Right no_match -> return no_match
-
-      --broadcast (unwrap a) >> epp (c (unwrap a)) l'
-      | otherwise = do
-          v <- s
-          case v of
-            Left a -> do
-              x <- recv (toLocTm l)
-              k <- c
-              return (k x)
-            Right b -> return b
-
-      {-
-    handler (Cond l a c)
-      | toLocTm l == l' = broadcast (unwrap a) >> epp (c (unwrap a)) l'
-      | otherwise       = recv (toLocTm l) >>= \x -> epp (c x) l'
-      -}
-
 -- * Choreo operations
 
 -- | Perform a local computation at a given location.
@@ -338,11 +266,11 @@ eliminate x fb fa = select (match x <$> fa) (const . Right <$> fb)
       -> Proxy l'                   -- ^ A receiver's location.
       -> Choreo m (a @ l')
 (~~>) (l, c, m) l' = do
-  let x = LocalAp l (Eff l (V (pure (v m)) [|| pure $$(cv m) ||])) c
+  let x = LocalAp l (Eff l (V  [|| pure $$(cv m) ||])) c
   (l, x) ~> l'
 
 (**>) :: FreeApplicative m b -> FreeApplicative m a -> FreeApplicative m b
-(**>) a b = Ap (Fmap (V (\b _ -> b) [|| \ b _ -> b ||]) a) b
+(**>) a b = Ap (Fmap (V [|| \ b _ -> b ||]) a) b
 
 {-
 -- | A variant of `cond` that conditonally executes choregraphies based on the
@@ -377,7 +305,7 @@ condBool l b k =
 --c = (bimap wrap (Left . wrap) . unwrap)
 
 e :: V ((a -> c) -> (b -> c) -> Either a b -> c)
-e = V undefined [|| either ||]
+e = V [|| either ||]
 
 branch :: (Typeable a, Typeable b, Show a, Show b, Read a, Read b, KnownSymbol l) => Proxy l -> Choreo m ((Either a b) @ l) -> Choreo m (a -> c) -> Choreo m (b -> c) -> Choreo m c
 branch p x l r = Cond p x  ((Fmap e l) `Ap` r)
@@ -404,9 +332,9 @@ cb = wrap . bool (Left ()) (Right ()) . unwrap
 branch2 :: Choreo m ((Either a b)) -> Choreo m (a -> c) -> Choreo m (b -> c) -> Choreo m c
 branch2 x l r = SelectN (SelectN g q) r
   where
-    g = Fmap (V (bimap id Left) [|| bimap id Left ||])  x
+    g = Fmap (V [|| bimap id Left ||])  x
 
-    q = Fmap (V (fmap Right) [|| fmap Right ||]) l
+    q = Fmap (V [|| fmap Right ||]) l
 
     m1 True = Left ()
     m1 False = Right (Left ())
@@ -417,11 +345,12 @@ bool t f True = t
 bool t f False = f
 
 ifBool :: Choreo m Bool -> Choreo m a -> Choreo m a -> Choreo m a
-ifBool b t f = branch2 (Fmap (V (bool (Left ()) (Right ())) [|| bool (Left ()) (Right ()) ||]) b) (Fmap (V const [|| const ||]) t) (Fmap (V const [|| const ||]) f)
+ifBool b t f = branch2 (Fmap (V [|| bool (Left ()) (Right ()) ||]) b) (Fmap (V [|| const ||]) t) (Fmap (V [|| const ||]) f)
 
 
 condBool :: (KnownSymbol l) => Proxy l -> Choreo m (Bool @ l) -> (Bool -> Choreo m b) -> Choreo m b
-condBool l b k = branch l (Fmap (V cb [|| cb ||])  b) (Fmap (V const [|| const ||]) (k True)) (Fmap (V const [|| const ||]) (k False))
+condBool l b k = -- branch l (Fmap (V [|| cb ||])  b) (Fmap (V [|| const ||]) (k True)) (Fmap (V [|| const ||]) (k False))
+  Cond l b (Pure (V [|| bool ||]) `Ap` k False `Ap` k True)
 
 {-
 condBool' :: (KnownSymbol l) => Proxy l -> Choreo m (Bool @ l) -> (Bool -> Choreo m b) -> Choreo m b
