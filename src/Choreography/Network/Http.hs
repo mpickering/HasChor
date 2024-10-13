@@ -85,7 +85,7 @@ instance Monad f => Monad (HttpNetwork f) where
 instance MonadIO m => C.NetworkT HttpNetwork m where
   run_ m = HttpNetwork $ \_ _ _ _ -> liftIO (print "running") >> m
   send_ a l = HttpNetwork $ \cfg self mgr chans -> liftIO $ do
-    print ("SEND ->" ++ l)
+    print ("SEND ->" ++ l ++ show a)
     res <- runClientM (send self $ show a) (mkClientEnv mgr (locToUrl cfg ! l))
     case res of
             Left err -> putStrLn $ "Error : " ++ show err
@@ -98,7 +98,9 @@ instance MonadIO m => C.NetworkT HttpNetwork m where
 
   recv_ l = HttpNetwork $ \_ _ mgr chans -> do
           liftIO $ print ("RECV " ++ l)
-          liftIO $ read <$> readChan (chans ! l)
+          msg <- liftIO $ readChan (chans ! l)
+          liftIO $ print ("RECVed " ++ msg)
+          pure (read msg)
   broadcast_ a = HttpNetwork $ \cfg self mgr chans -> httpNetwork (mapM_ (C.send_ a) (locs cfg)) cfg self mgr chans
 
 

@@ -39,6 +39,7 @@ class NetworkT n m where
 
 run x = Network (run_ x)
 send x l = Network (send_ x l)
+recv :: forall a m . (Read a) => LocTm -> Network m a
 recv l = Network (recv_ l)
 broadcast a = Network (broadcast_ a)
 

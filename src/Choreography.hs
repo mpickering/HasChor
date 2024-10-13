@@ -27,6 +27,7 @@ module Choreography (
   Port,
   HttpConfig,
    mkHttpConfig,
+   ifBool,
 
   -- * Running choreographies
   runChoreo,
