@@ -13,6 +13,7 @@ import Data.List
 import Data.Proxy
 import GHC.TypeLits
 import Control.Selective hiding (branch)
+import qualified Control.Selective as S
 import Data.Bifunctor
 import Data.Functor
 import Language.Haskell.TH
@@ -27,14 +28,19 @@ data Var m a = Var (Code Q (Network m a)) | Var2 (Code Q (m a))
 data FreeApplicative f a where
   Pure :: V a -> FreeApplicative f a
   Eff :: KnownSymbol l => Proxy l -> V (f a) -> FreeApplicative f (a @ l)
+  EffG :: V (f a) -> FreeApplicative f a
   Dragon :: Var f a -> FreeApplicative f a
   Fmap :: V (a -> b) -> FreeApplicative f a -> FreeApplicative f b
   Ap :: FreeApplicative f (a -> b) -> FreeApplicative f a -> FreeApplicative f b
---  Select :: (Read a, Show a, KnownSymbol l, Typeable a) => Proxy l -> FreeApplicative f (Either (a @ l) b) -> FreeApplicative f (a -> b) -> FreeApplicative f b
+  Select :: (Read a, Show b, Read b, Show a, KnownSymbol l, Typeable a, Typeable b) => Proxy l -> FreeApplicative f ((Either a b) @ l) -> FreeApplicative f (a -> c)
+                     -> FreeApplicative f (b -> c)
+                     -> FreeApplicative f c
+  {-
   Cond  :: (Read a, Show a, KnownSymbol l, Typeable a) => Proxy l
         -> FreeApplicative f (a @ l)
         -> FreeApplicative f (a -> r)
         -> FreeApplicative f r
+        -}
   Comm  :: (Show a, Read a, KnownSymbol l, KnownSymbol l', Typeable a) => Proxy l -> FreeApplicative f (a @ l) -> Proxy l' -> FreeApplicative f (a @ l')
   Let :: FreeApplicative f a -> (FreeApplicative f a -> FreeApplicative f b) -> FreeApplicative f b
   -- Application on a specific node
@@ -100,10 +106,11 @@ staged c =
     Pure a -> [|| pure $$(cv a) ||]
     Dragon (Var2 ma) -> ma
     Eff _ c -> [|| fmap wrap $$(cv c) ||]
+    EffG v  -> cv v
     Fmap f a -> [|| fmap $$(cv f) $$(staged a) ||]
     Ap fa a        -> [|| $$(staged fa) <*> $$(staged a) ||]
---    Select l e k   -> [|| select (fmap (bimap unwrap id) $$(staged e)) $$(staged k) ||]
-    Cond _ a f       -> [|| (unwrap <$>) $$(staged a) <**> $$(staged f) ||]
+    Select l e k1 k2   -> [|| S.branch ((fmap unwrap) $$(staged e)) $$(staged k1) $$(staged k2) ||]
+--    Cond _ a f       -> [|| (unwrap <$>) $$(staged a) <**> $$(staged f) ||]
     Comm l1 fa l2  -> [|| wrap . unwrap <$> $$(staged fa) ||]
     LocalAp l m a  -> [|| do
                             m' <- unwrap <$> $$(staged m)
@@ -113,7 +120,7 @@ staged c =
 
     Loop f         -> [|| let res = $$(staged (f (Dragon (Var2 [|| res ||])))) in res ||]
     SelectN fe fab -> [|| select $$(staged fe) $$(staged fab) ||]
-    Let a b -> [|| let l = $$(staged a) in $$(staged (b (Dragon (Var2 [|| l ||])))) ||]
+    Let a b -> [|| do { l <- $$(staged a); $$(staged (b (Dragon (Var2 [|| pure l ||])))) } ||]
 
 
 
@@ -135,25 +142,29 @@ stagedEpp c l' =
   case c of
     Pure a -> R [|| pure ($$(cv a)) ||]
     Dragon (Var ma) -> R $ ma
+    EffG v -> R $ [|| run $$(cv v) ||]
 
     Eff loc c
       | toLocTm loc == l' -> R [|| fmap wrap $ run $$(cv c) ||]
       | otherwise -> R [|| pure Empty ||]
     Fmap f a -> R [|| $$(cv f) <$> $$(runR $ stagedEpp a l') ||]
     Ap fa a -> R [|| $$(runR $ stagedEpp fa l') <*> $$(runR $ stagedEpp a l') ||]
---    Select l e k -> sel l (stagedEpp e l') (stagedEpp k l')
+    Select l e k1 k2 -> sel l (stagedEpp e l') (stagedEpp k1 l') (stagedEpp k2 l')
 --    Cond
+    {-
     Cond l c k
       | toLocTm l == l' -> R $ [|| do { a <- $$(runR $ stagedEpp c l'); broadcast (unwrap a); f <- $$(runR $ stagedEpp k l'); pure (f (unwrap a)) } ||]
       | otherwise -> R $ [||  do { _ <- $$(runR $ stagedEpp c l')
                                 ; a <- $$(genRecv) $$(liftTyped (toLocTm l))
                                 ; f <- $$(runR $ stagedEpp k l')
                                 ; return (f a) } ||]
+                                -}
     Comm l1 fa l2 -> handlerComm l1 (stagedEpp fa l') l2
     LocalAp l m a -> handlerLoc l (stagedEpp m l') (stagedEpp a l')
     Loop f -> R [|| let res = $$(runR $ stagedEpp (f (Dragon (Var [|| res ||]))) l')
                     in res ||]
-    Let a b -> R [|| let l = $$(runR $ stagedEpp a l') in $$(runR $ stagedEpp (b (Dragon (Var [|| l ||]))) l') ||]
+    Let a b -> R [|| do { l <- $$(runR $ stagedEpp a l'); $$(runR $ stagedEpp (b (Dragon (Var [|| pure l ||]))) l') } ||]
+--    Let a b -> stagedEpp (b a) l'
     SelectN fe fab -> R [|| select $$(runR $ stagedEpp fe l') $$(runR $ stagedEpp fab l') ||]
 {-
   Pure :: a -> FreeApplicative f a
@@ -173,26 +184,31 @@ stagedEpp c l' =
 
 
   where
-    sel :: (Typeable z, Read z, Show z, KnownSymbol l) => Proxy l -> R m (Either (z @ l) b) -> R m (z -> b) -> R m b
-    sel l (R s) (R c)
+    sel :: (Typeable z1, Read z1, Show z1, KnownSymbol l
+           , Typeable z2, Read z2, Show z2) => Proxy l -> R m ((Either z1 z2) @  l) -> R m (z1 -> b) -> R m (z2 -> b) -> R m b
+    sel l (R s) (R k1) (R k2)
       | toLocTm l == l' = R $ [|| do
           v <- $$s
-          case v of
+          broadcast (unwrap v)
+          case unwrap v of
             Left a -> do
-              broadcast (unwrap a)
-              k <- $$c
-              return $ (k (unwrap a))
-            Right no_match -> return no_match ||]
+              k <- $$k1
+              return $ (k a)
+            Right b -> do
+              k <- $$k2
+              return $ (k b) ||]
 
       --broadcast (unwrap a) >> epp (c (unwrap a)) l'
       | otherwise = R $ [|| do
           v <- $$s
-          case v of
+          x <- $$(genRecv) $$(liftTyped (toLocTm l))
+          case x of
             Left a -> do
-              x <- $$(genRecv) $$(liftTyped (toLocTm l))
-              k <- $$c
-              return (k x)
-            Right b -> return b ||]
+              k <- $$k1
+              return (k a)
+            Right b -> do
+              k <- $$k2
+              return (k b) ||]
 
     handlerComm :: (forall l l' z . (Typeable z, Show z, Read z, KnownSymbol l, KnownSymbol l') => Proxy l -> R m (z @ l) -> Proxy l' -> R m (z @ l'))
     handlerComm s (R a) r
@@ -305,29 +321,15 @@ condBool l b k =
 --    m1 False = Right (Left False)
 --    -}
 --
---c = (bimap wrap (Left . wrap) . unwrap)
-
 e :: V ((a -> c) -> (b -> c) -> Either a b -> c)
 e = V [|| either ||]
 
 branch :: (Typeable a, Typeable b, Show a, Show b, Read a, Read b, KnownSymbol l) => Proxy l -> Choreo m ((Either a b) @ l) -> Choreo m (a -> c) -> Choreo m (b -> c) -> Choreo m c
-branch p x l r = Cond p x  ((Fmap e l) `Ap` r)
+branch p x l r = Select p x l r
 
 
-{-Select p (Select p g q) r
-  where
-    g = Fmap (V c [|| c ||])  x
 
-    q = Fmap (V (fmap Right) [|| fmap Right ||]) l
-
-    m1 True = Left (wrap ())
-    m1 False = Right (Left ())
-
-    m2 = Right
-    -}
-
-
-cb = wrap . bool (Left ()) (Right ()) . unwrap
+cb = mapLoc  (bool (Left ()) (Right ()))
   where
     bool t f True = t
     bool t f False = f
@@ -339,10 +341,6 @@ branch2 x l r = SelectN (SelectN g q) r
 
     q = Fmap (V [|| fmap Right ||]) l
 
-    m1 True = Left ()
-    m1 False = Right (Left ())
-
-    m2 = Right
 
 bool t f True = t
 bool t f False = f
@@ -352,8 +350,8 @@ ifBool b t f = branch2 (Fmap (V [|| bool (Left ()) (Right ()) ||]) b) (Fmap (V [
 
 
 condBool :: (KnownSymbol l) => Proxy l -> Choreo m (Bool @ l) -> (Bool -> Choreo m b) -> Choreo m b
-condBool l b k = -- branch l (Fmap (V [|| cb ||])  b) (Fmap (V [|| const ||]) (k True)) (Fmap (V [|| const ||]) (k False))
-  Cond l b (Pure (V [|| bool ||]) `Ap` k False `Ap` k True)
+condBool l b k = branch l (Fmap (V [|| cb ||])  b) (Fmap (V [|| const ||]) (k True)) (Fmap (V [|| const ||]) (k False))
+  --Cond l b (Pure (V [|| bool ||]) `Ap` k False `Ap` k True)
 
 {-
 condBool' :: (KnownSymbol l) => Proxy l -> Choreo m (Bool @ l) -> (Bool -> Choreo m b) -> Choreo m b

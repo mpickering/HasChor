@@ -14,11 +14,19 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.State
 import System.Environment
 import Control.Selective
+import Debug.Trace
+import Choreography.Location
 
 -- an edge of the ring is represented as a tuple of two locaitons l and l' where
 -- l is on the left of l'
 data Edge = forall l l'.
   (KnownSymbol l, KnownSymbol l') => Edge (Proxy l) (Proxy l')
+
+instance Show Edge where
+  show (Edge (e1 :: Proxy l1) (e2 :: Proxy l2)) = toLocTm e1 ++ "->" ++ toLocTm e2
+
+
+ifBoolTest = ifBool (Pure (V [|| False ||])) (EffG (V [|| print "t" ||])) (EffG (V [|| print "f" ||]))
 
 -- a ring is a sequence of edges
 type Ring = [Edge]
@@ -31,16 +39,16 @@ list l k = branch (p <$> l) (const <$> k)
     p [] = Left ()
     p (x:xs) = Right (x, xs)
 
-f = (pure (\l -> pure (\r -> pure (l == r))))
+f = (pure (\l -> pure (\r -> lift (print ("==",l, r)) >> pure (l == r))))
 
-f2 = (pure (\l -> pure (\r -> put (max l r))))
+f2 = (pure (\l -> pure (\r -> lift (print ("max", l,r)) >> put (max l r))))
 
 ringLeader :: Ring -> Choreo (StateT Label IO) ()
 ringLeader ring = Loop (\k -> unroll ring k)
   where
     unroll :: Ring -> Choreo (StateT Label IO) () -> Choreo (StateT Label IO) ()
     unroll []     k = k
-    unroll (x:xs) k = do
+    unroll (x:xs) k = traceShow x $
       ifBool (talkToRight x)
         (Pure (V [|| () ||]))
         (unroll xs k)
@@ -57,10 +65,11 @@ ringLeader ring = Loop (\k -> unroll ring k)
                 (condBool right finished \case
                   True  -> Fmap (V [|| \_ -> True ||]) $
                     right `locally` (V[|| (lift $ putStrLn "I'm the leader") ||])
+                    **> EffG (V [|| get >>= lift . print ||])
+
                   False ->
                     Fmap (V [|| \_ -> False ||]) $
                     LocalAp right (LocalAp right (Eff right (V [|| f2 ||])) labelLeft) labelRight)
---          right `locally` \un -> put (max (un labelLeft) (un labelRight))
 
 nodeA :: Proxy "A"
 nodeA = Proxy

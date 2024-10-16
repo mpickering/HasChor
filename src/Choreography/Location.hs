@@ -26,6 +26,10 @@ data a @ (l :: LocTy)
   | Empty  -- ^ A located value @a \@ l@ from locations other than @l@'s
            -- perspective.
 
+mapLoc :: (a -> b) -> a @ l -> b @ l
+mapLoc f Empty = Empty
+mapLoc f (Wrap a) = Wrap (f a)
+
 -- | Wrap a value as a located value.
 wrap :: a -> a @ l
 wrap = Wrap

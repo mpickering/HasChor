@@ -170,6 +170,7 @@ executable ring-leader
     hs-source-dirs:   examples/ring-leader
     main-is:          Main.hs
     default-language: GHC2021
+    exposed-modules: Ring
     build-depends:
         HasChor,
         base ,
