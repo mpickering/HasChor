@@ -32,9 +32,9 @@ data FreeApplicative f a where
   Dragon :: Var f a -> FreeApplicative f a
   Fmap :: V (a -> b) -> FreeApplicative f a -> FreeApplicative f b
   Ap :: FreeApplicative f (a -> b) -> FreeApplicative f a -> FreeApplicative f b
-  Select :: (Read a, Show b, Read b, Show a, KnownSymbol l, Typeable a, Typeable b) => Proxy l -> FreeApplicative f ((Either a b) @ l) -> FreeApplicative f (a -> c)
-                     -> FreeApplicative f (b -> c)
-                     -> FreeApplicative f c
+  Broadcast :: (Read a, Show a, KnownSymbol l, Typeable a)
+            => Proxy l -> FreeApplicative f (a @ l)
+            -> FreeApplicative f a
   {-
   Cond  :: (Read a, Show a, KnownSymbol l, Typeable a) => Proxy l
         -> FreeApplicative f (a @ l)
@@ -109,7 +109,7 @@ staged c =
     EffG v  -> cv v
     Fmap f a -> [|| fmap $$(cv f) $$(staged a) ||]
     Ap fa a        -> [|| $$(staged fa) <*> $$(staged a) ||]
-    Select l e k1 k2   -> [|| S.branch ((fmap unwrap) $$(staged e)) $$(staged k1) $$(staged k2) ||]
+    Broadcast l e   -> [|| (fmap unwrap) $$(staged e) ||]
 --    Cond _ a f       -> [|| (unwrap <$>) $$(staged a) <**> $$(staged f) ||]
     Comm l1 fa l2  -> [|| wrap . unwrap <$> $$(staged fa) ||]
     LocalAp l m a  -> [|| do
@@ -149,66 +149,26 @@ stagedEpp c l' =
       | otherwise -> R [|| pure Empty ||]
     Fmap f a -> R [|| $$(cv f) <$> $$(runR $ stagedEpp a l') ||]
     Ap fa a -> R [|| $$(runR $ stagedEpp fa l') <*> $$(runR $ stagedEpp a l') ||]
-    Select l e k1 k2 -> sel l (stagedEpp e l') (stagedEpp k1 l') (stagedEpp k2 l')
---    Cond
-    {-
-    Cond l c k
-      | toLocTm l == l' -> R $ [|| do { a <- $$(runR $ stagedEpp c l'); broadcast (unwrap a); f <- $$(runR $ stagedEpp k l'); pure (f (unwrap a)) } ||]
-      | otherwise -> R $ [||  do { _ <- $$(runR $ stagedEpp c l')
-                                ; a <- $$(genRecv) $$(liftTyped (toLocTm l))
-                                ; f <- $$(runR $ stagedEpp k l')
-                                ; return (f a) } ||]
-                                -}
+    Broadcast l e -> sel l (stagedEpp e l')
     Comm l1 fa l2 -> handlerComm l1 (stagedEpp fa l') l2
     LocalAp l m a -> handlerLoc l (stagedEpp m l') (stagedEpp a l')
     Loop f -> R [|| let res = $$(runR $ stagedEpp (f (Dragon (Var [|| res ||]))) l')
                     in res ||]
     Let a b -> R [|| do { l <- $$(runR $ stagedEpp a l'); $$(runR $ stagedEpp (b (Dragon (Var [|| pure l ||]))) l') } ||]
---    Let a b -> stagedEpp (b a) l'
     SelectN fe fab -> R [|| select $$(runR $ stagedEpp fe l') $$(runR $ stagedEpp fab l') ||]
-{-
-  Pure :: a -> FreeApplicative f a
-  Eff :: KnownSymbol l => Proxy l -> f a -> FreeApplicative f (a @ l)
-  Fmap :: (a -> b) -> FreeApplicative f a -> FreeApplicative f b
-  Ap :: FreeApplicative f (a -> b) -> FreeApplicative f a -> FreeApplicative f b
-  Select :: (Read a, Show a, KnownSymbol l) => Proxy l -> FreeApplicative f (Either (a @ l) b) -> FreeApplicative f (a -> b) -> FreeApplicative f b
-  Comm  :: (Show a, Read a, KnownSymbol l, KnownSymbol l') => Proxy l -> FreeApplicative f (a @ l) -> Proxy l' -> FreeApplicative f (a @ l')
-  -- Application on a specific node
-  LocalAp ::
-    KnownSymbol l => Proxy l -> FreeApplicative f ((a -> f b) @ l)
-                  -> FreeApplicative f (a @ l) -> FreeApplicative f (b @ l)
-  Loop :: (FreeApplicative f a -> FreeApplicative f a) -> FreeApplicative f a
-  SelectN :: FreeApplicative f (Either a b) -> FreeApplicative f (a -> b) -> FreeApplicative f b
-  -}
-
 
 
   where
-    sel :: (Typeable z1, Read z1, Show z1, KnownSymbol l
-           , Typeable z2, Read z2, Show z2) => Proxy l -> R m ((Either z1 z2) @  l) -> R m (z1 -> b) -> R m (z2 -> b) -> R m b
-    sel l (R s) (R k1) (R k2)
+    sel :: (Typeable z1, Read z1, Show z1, KnownSymbol l) => Proxy l -> R m (z1 @  l) -> R m z1
+    sel l (R s)
       | toLocTm l == l' = R $ [|| do
           v <- $$s
           broadcast (unwrap v)
-          case unwrap v of
-            Left a -> do
-              k <- $$k1
-              return $ (k a)
-            Right b -> do
-              k <- $$k2
-              return $ (k b) ||]
+          return (unwrap v) ||]
 
-      --broadcast (unwrap a) >> epp (c (unwrap a)) l'
       | otherwise = R $ [|| do
           v <- $$s
-          x <- $$(genRecv) $$(liftTyped (toLocTm l))
-          case x of
-            Left a -> do
-              k <- $$k1
-              return (k a)
-            Right b -> do
-              k <- $$k2
-              return (k b) ||]
+          $$(genRecv) $$(liftTyped (toLocTm l)) ||]
 
     handlerComm :: (forall l l' z . (Typeable z, Show z, Read z, KnownSymbol l, KnownSymbol l') => Proxy l -> R m (z @ l) -> Proxy l' -> R m (z @ l'))
     handlerComm s (R a) r
@@ -325,7 +285,7 @@ e :: V ((a -> c) -> (b -> c) -> Either a b -> c)
 e = V [|| either ||]
 
 branch :: (Typeable a, Typeable b, Show a, Show b, Read a, Read b, KnownSymbol l) => Proxy l -> Choreo m ((Either a b) @ l) -> Choreo m (a -> c) -> Choreo m (b -> c) -> Choreo m c
-branch p x l r = Select p x l r
+branch p x l r = branch2 (Broadcast p x) l r
 
 
 
