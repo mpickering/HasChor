@@ -23,6 +23,7 @@ library
         Control.Monad.Freer
     build-depends:
         base ,
+        containers,
         bytestring ,
         http-client ,
         servant ,

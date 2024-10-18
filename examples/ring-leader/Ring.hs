@@ -43,17 +43,17 @@ f = (pure (\l -> pure (\r -> lift (print ("==",l, r)) >> pure (l == r))))
 
 f2 = (pure (\l -> pure (\r -> lift (print ("max", l,r)) >> put (max l r))))
 
-ringLeader :: Ring -> Choreo (StateT Label IO) ()
+ringLeader :: Ring -> Choreo v (StateT Label IO) ()
 ringLeader ring = Loop (\k -> unroll ring k)
   where
-    unroll :: Ring -> Choreo (StateT Label IO) () -> Choreo (StateT Label IO) ()
+    unroll :: Ring -> Choreo v (StateT Label IO) () -> Choreo v (StateT Label IO) ()
     unroll []     k = k
     unroll (x:xs) k = traceShow x $
       ifBool (talkToRight x)
         (Pure (V [|| () ||]))
         (unroll xs k)
 
-    talkToRight :: Edge -> Choreo (StateT Label IO) Bool
+    talkToRight :: Edge -> Choreo v (StateT Label IO) Bool
     talkToRight (Edge left right) = do
       Let ((left, Eff left (V [|| pure () ||]), V [|| \_ -> get ||]) ~~> right) $
         \labelLeft ->
