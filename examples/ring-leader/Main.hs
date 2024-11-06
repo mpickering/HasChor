@@ -25,10 +25,11 @@ import Ring
 
 main :: IO ()
 main = do
+  print (allLocs (ringLeader ring))
+  print (communicationMap (ringLeader ring))
   [loc] <- getArgs
   putStrLn "Please input a label:"
   label <- read <$> getLine
-  print (communicationMap (ringLeader ring))
 --  runNetwork config "A" ($$(runR $ stagedEpp ifBoolTest "A"))
 --  runStateT (runChoreography config (ringLeader ring) loc) label
   case loc of

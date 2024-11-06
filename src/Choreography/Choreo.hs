@@ -45,7 +45,7 @@ data FreeApplicative v f a where
   Comm  :: (Show a, Read a, KnownSymbol l, KnownSymbol l', Typeable a) => Proxy l -> FreeApplicative v f (a @ l) -> Proxy l' -> FreeApplicative v f (a @ l')
   Let :: FreeApplicative v f a -> (FreeApplicative v f a -> FreeApplicative v f b) -> FreeApplicative v f b
   Loop :: (FreeApplicative v f a -> FreeApplicative v f a) -> FreeApplicative v f a
-  Dragon :: v f a -> FreeApplicative v f a
+  Var :: v f a -> FreeApplicative v f a
   SelectN :: FreeApplicative v f (Either a b) -> FreeApplicative v f (a -> b) -> FreeApplicative v f b
 
 
@@ -61,7 +61,7 @@ staged :: forall m a . (Selective m, Monad m) => Choreo V1 m a-> Code Q (m a)
 staged c =
   case c of
     Pure a -> [|| pure $$(cv a) ||]
-    Dragon (V1 ma) -> ma
+    Var (V1 ma) -> ma
     Eff _ c -> [|| fmap wrap $$(cv c) ||]
     EffG v  -> cv v
     Fmap f a -> [|| fmap $$(cv f) $$(staged a) ||]
@@ -74,9 +74,9 @@ staged c =
                             wrap <$> (m' (unwrap a')) ||]
 
 
-    Loop f         -> [|| let res = $$(staged (f (Dragon (V1 [|| res ||])))) in res ||]
+    Loop f         -> [|| let res = $$(staged (f (Var (V1 [|| res ||])))) in res ||]
     SelectN fe fab -> [|| select $$(staged fe) $$(staged fab) ||]
-    Let a b -> [|| do { l <- $$(staged a); $$(staged (b (Dragon (V1 [|| pure l ||])))) } ||]
+    Let a b -> [|| do { l <- $$(staged a); $$(staged (b (Var (V1 [|| pure l ||])))) } ||]
 
 
 
@@ -97,7 +97,7 @@ stagedEpp :: forall m a . Choreo R m a -> LocTm -> (R m) a
 stagedEpp c l' =
   case c of
     Pure a -> R [|| pure ($$(cv a)) ||]
-    Dragon ma -> ma
+    Var ma -> ma
     EffG v -> R $ [|| run $$(cv v) ||]
 
     Eff loc c
@@ -108,9 +108,9 @@ stagedEpp c l' =
     Broadcast l e -> sel l (stagedEpp e l')
     Comm l1 fa l2 -> handlerComm l1 (stagedEpp fa l') l2
     LocalAp l m a -> handlerLoc l (stagedEpp m l') (stagedEpp a l')
-    Loop f -> R [|| let res = $$(runR $ stagedEpp (f (Dragon (R [|| res ||]))) l')
+    Loop f -> R [|| let res = $$(runR $ stagedEpp (f (Var (R [|| res ||]))) l')
                     in res ||]
-    Let a b -> R [|| do { l <- $$(runR $ stagedEpp a l'); $$(runR $ stagedEpp (b (Dragon (R [|| pure l ||]))) l') } ||]
+    Let a b -> R [|| do { l <- $$(runR $ stagedEpp a l'); $$(runR $ stagedEpp (b (Var (R [|| pure l ||]))) l') } ||]
     SelectN fe fab -> R [|| select $$(runR $ stagedEpp fe l') $$(runR $ stagedEpp fab l') ||]
 
 
@@ -157,7 +157,7 @@ newtype CM m a = CM (Map.Map LocTm (Set.Set LocTm))
 communicationMap :: forall v m a . (Selective m, Monad m) => Choreo CM m a -> CommunicationMap
 communicationMap c =  case c of
     Pure a -> noComms
-    Dragon (CM ma) -> ma
+    Var (CM ma) -> ma
     Eff _ c -> noComms
     EffG v  -> noComms
     Fmap f a -> communicationMap a
@@ -167,9 +167,31 @@ communicationMap c =  case c of
     Comm l1 fa l2  -> communicationMap fa `unionCM` comm (toLocTm l1) (toLocTm l2)
     LocalAp l m a  -> communicationMap m `unionCM` communicationMap a
 
-    Loop f         -> communicationMap (f (Dragon (CM noComms)))
+    Loop f         -> communicationMap (f (Var (CM noComms)))
     SelectN fe fab -> communicationMap fe `unionCM` communicationMap fab
-    Let a b -> communicationMap a `unionCM` communicationMap (b (Dragon (CM noComms)))
+    Let a b -> communicationMap a `unionCM` communicationMap (b (Var (CM noComms)))
+
+newtype LS m a = LS (Set.Set LocTm)
+
+noLocs = Set.empty
+
+-- | Compute which nodes are used in the network
+allLocs :: forall v m a . (Selective m, Monad m) => Choreo LS m a -> Set.Set LocTm
+allLocs c =  case c of
+    Pure a -> noLocs
+    Var (LS ma) -> ma
+    Eff l c -> Set.singleton (toLocTm l)
+    EffG v  -> noLocs
+    Fmap f a ->  allLocs a
+    Ap fa a        -> allLocs fa `Set.union` allLocs a
+    Broadcast l e   -> -- TODO
+                        Set.singleton (toLocTm l) `Set.union` allLocs e
+    Comm l1 fa l2  -> allLocs fa `Set.union` (Set.fromList [(toLocTm l1), (toLocTm l2)])
+    LocalAp l m a  -> Set.singleton (toLocTm l) `Set.union` allLocs m `Set.union` allLocs a
+
+    Loop f         -> allLocs (f (Var (LS noLocs)))
+    SelectN fe fab -> allLocs fe `Set.union` allLocs fab
+    Let a b -> allLocs a `Set.union` allLocs (b (Var (LS noLocs)))
 
 
 -- * Choreo operations
